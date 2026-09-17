@@ -4,6 +4,8 @@ A single-file web app that merges PDFs entirely in your browser. No server, no u
 
 ## Use it
 
+Click the link: https://vlageez.github.io/simple-pdf-combiner/
+OR
 Double-click `index.html`, or open it in any modern browser. It runs fine from `file://`.
 
 1. Drop PDFs onto the box (or click to pick them)
