@@ -4,12 +4,12 @@ A small browser app that combines PDFs, images, and text extracted from DOCX, PP
 
 ## Use it
 
-Open the app at https://vlageez.github.io/simple-pdf-combiner/, or open `index.html` in a modern browser. The bundled `pdf-lib.min.js` library is used when present; if it is missing, the page tries to load pdf-lib from cdnjs, so that case requires an internet connection.
+Open the app at https://vlageez.github.io/simple-pdf-combiner/, or open `index.html` in a modern browser. The app uses pdf-lib (`pdf-lib.min.js`) to read and assemble PDF pages. Keep `index.html` beside that library when using the repository files, or use **Download standalone HTML** in the app to create one self-contained file. The standalone file includes the library and works offline; it is larger because the PDF library is embedded.
 
 1. Drop files onto the box (or click to choose them): PDF, supported images, DOCX, PPTX, or ODP.
 2. Drag rows — or use the ↑ / ↓ buttons — to set the output order.
 3. Optionally narrow a PDF to selected pages. Office files are converted automatically.
-4. Click **Combine & download** to save `combined.pdf`.
+4. Click **Combine & download** to save `combined.pdf`, or **Download standalone HTML** to save a single-file copy of the app.
 
 ### Office document conversion
 
@@ -45,7 +45,7 @@ Each image becomes one page, sized to the image and scaled so its long edge fits
 
 ## Privacy
 
-Input files are read and processed in the browser. Office documents are not sent to a third-party conversion service. The app has no backend and does not transmit your files. When the library bundle is available locally, combining files needs no network requests; if the bundle is missing, pdf-lib's CDN fallback loads the library only.
+Input files are read and processed in the browser. Office documents are not sent to a third-party conversion service. The app has no backend and does not transmit your files. The standalone HTML embeds pdf-lib and needs no external library request. When using the repository's separate files, `pdf-lib.min.js` must be beside `index.html` (or the CDN fallback needs internet access).
 
 ## Limitations
 

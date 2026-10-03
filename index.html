@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PDF, Image &amp; Document Combiner</title>
-<!-- pdf-lib ships next to this file, so everything works offline / straight from disk. -->
-<script src="pdf-lib.min.js"></script>
+<!-- The standalone download replaces this marked section with pdf-lib's bundled source. -->
+<!-- PDF_LIB_EXTERNAL_START -->
+<script id="pdf-lib-library" src="pdf-lib.min.js"></script>
+<!-- PDF_LIB_EXTERNAL_END -->
 <script>
   // Only if the bundled copy is missing (e.g. index.html moved on its own): use the CDN.
   if (!window.PDFLib) {
@@ -110,6 +112,7 @@
     <span class="count" id="count">No files yet</span>
     <button id="sort" disabled>Sort by name</button>
     <button id="clear" disabled>Clear all</button>
+    <button id="standalone">Download standalone HTML</button>
     <button id="merge" class="primary" disabled>Combine &amp; download</button>
   </div>
 
@@ -755,8 +758,62 @@ async function combine() {
   }
 }
 
+/* ---------- standalone download ---------- */
+
+const standaloneBtn = document.getElementById('standalone');
+
+function buildStandaloneHtml(source, library) {
+  const start = '<!-- PDF_LIB_EXTERNAL_START -->';
+  const end = '<!-- PDF_LIB_EXTERNAL_END -->';
+  const from = source.indexOf(start), to = source.indexOf(end, from);
+  if (from < 0 || to < 0) {
+    if (source.includes('id="embedded-pdf-lib"')) return source;
+    throw new Error('Could not find the bundled PDF library placeholder.');
+  }
+  const safeLibrary = library.replace(new RegExp('<' + '/script', 'gi'), '<' + '\\/' + 'script');
+  const embedded = start + '\n<script id="embedded-pdf-lib">\n' + safeLibrary + '\n<' + '/script>\n' + end;
+  return source.slice(0, from) + embedded + source.slice(to + end.length);
+}
+
+async function downloadStandalone() {
+  standaloneBtn.disabled = true;
+  say('Preparing standalone HTML…');
+  try {
+    const embedded = document.getElementById('embedded-pdf-lib');
+    let library = embedded && embedded.textContent;
+    if (!library) {
+      let response;
+      try {
+        response = await fetch(new URL('pdf-lib.min.js', window.location.href));
+      } catch (e) {
+        throw new Error('Could not read pdf-lib.min.js. Open the published app, or serve index.html and pdf-lib.min.js together from a local web server.');
+      }
+      if (!response.ok) throw new Error('Could not load pdf-lib.min.js (' + response.status + ').');
+      library = await response.text();
+    }
+
+    let html = '<!doctype html>\n' + document.documentElement.outerHTML;
+    html = buildStandaloneHtml(html, library);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'pdf-image-document-combiner.html';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    say('Standalone HTML downloaded. Save it anywhere and open it in a modern browser.', 'ok');
+  } catch (e) {
+    say('Could not create standalone HTML: ' + (e.message || e), 'err');
+  } finally {
+    standaloneBtn.disabled = false;
+  }
+}
+
 /* ---------- events ---------- */
 
+standaloneBtn.addEventListener('click', downloadStandalone);
 dropEl.addEventListener('click', () => picker.click());
 dropEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picker.click(); }
