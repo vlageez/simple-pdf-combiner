@@ -3,8 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PDF Combiner — merge PDFs in your browser</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<title>PDF, Image &amp; Document Combiner</title>
+<!-- pdf-lib ships next to this file, so everything works offline / straight from disk. -->
+<script src="pdf-lib.min.js"></script>
+<script>
+  // Only if the bundled copy is missing (e.g. index.html moved on its own): use the CDN.
+  if (!window.PDFLib) {
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"><\/script>');
+  }
+</script>
 <style>
   :root{
     --bg:#f6f7f9; --panel:#ffffff; --ink:#15181d; --muted:#6b7280;
@@ -90,14 +97,14 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>PDF Combiner</h1>
-  <p class="sub">Merge PDFs entirely on your device. Nothing is uploaded — there is no server.</p>
+  <h1>PDF, Image &amp; Document Combiner</h1>
+  <p class="sub">Combine PDFs, images, and office documents on your device. Files are processed locally and never uploaded.</p>
 
-  <div id="drop" tabindex="0" role="button" aria-label="Choose PDF files">
-    <strong>Drop PDFs here</strong>
-    <span>or click to choose files</span>
+  <div id="drop" tabindex="0" role="button" aria-label="Choose PDF, image, or office document files">
+    <strong>Drop PDFs, images, or documents here</strong>
+    <span>or click to choose — PDF, images, DOCX, PPTX, ODP</span>
   </div>
-  <input id="picker" type="file" accept="application/pdf,.pdf" multiple>
+  <input id="picker" type="file" accept="application/pdf,.pdf,image/*,.jpg,.jpeg,.png,.svg,.gif,.webp,.bmp,.avif,.docx,.pptx,.odp" multiple>
 
   <div class="bar">
     <span class="count" id="count">No files yet</span>
@@ -110,9 +117,10 @@
   <div id="status" role="status" aria-live="polite"></div>
 
   <p class="note">
-    Page column: leave blank for all pages, or enter ranges like <code>1-3, 7, 10-</code>.
-    Drag rows (or use the arrow buttons) to set the order. Password-protected files are read
-    where possible; if one fails, remove its protection first.
+    Page column (PDFs): leave blank for all pages, or enter ranges like <code>1-3, 7, 10-</code>.
+    Each image becomes one page, scaled to fit; office documents are converted from their readable text.
+    Drag rows (or use the arrow buttons) to set the order. Password-protected files are read where possible;
+    if one fails, remove its protection first.
   </p>
 </div>
 
@@ -128,7 +136,7 @@ const mergeBtn = document.getElementById('merge');
 const clearBtn = document.getElementById('clear');
 const sortBtn  = document.getElementById('sort');
 
-let items = [];   // {id, name, size, bytes, pageCount, error, range}
+let items = [];   // {id, kind, name, size, mime, format, w, h, orient, bytes, pageCount, error, range}
 let nextId = 1;
 
 /* ---------- helpers ---------- */
@@ -170,6 +178,7 @@ function outputPages() {
   let total = 0, bad = false;
   for (const it of items) {
     if (it.error) continue;
+    if (it.kind === 'image' || it.kind === 'document') { total += it.pageCount; continue; }
     const idx = parseRange(it.range, it.pageCount);
     if (!idx) { bad = true; continue; }
     total += idx.length;
@@ -213,12 +222,16 @@ function render() {
     info.className = 'info' + (it.error ? ' err' : '');
     info.textContent = it.error
       ? it.error
-      : it.pageCount + ' page' + (it.pageCount === 1 ? '' : 's') + ' · ' + fmtSize(it.size);
+      : it.kind === 'image'
+        ? 'image · ' + it.w + ' × ' + it.h + ' · ' + fmtSize(it.size)
+        : it.kind === 'document'
+          ? it.format.toUpperCase() + ' · ' + it.pageCount + ' page' + (it.pageCount === 1 ? '' : 's') + ' · text-only conversion · ' + fmtSize(it.size)
+          : it.pageCount + ' page' + (it.pageCount === 1 ? '' : 's') + ' · ' + fmtSize(it.size);
     meta.append(name, info);
 
     li.append(grip, meta);
 
-    if (!it.error) {
+    if (!it.error && it.kind === 'pdf') {
       const pages = document.createElement('input');
       pages.className = 'pages';
       pages.type = 'text';
@@ -269,38 +282,414 @@ function updateBar() {
   mergeBtn.disabled = usable === 0 || bad || total === 0;
 }
 
+/* ---------- image helpers ---------- */
+
+const IMG_EXT = /\.(avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
+const DOC_EXT = /\.(docx|pptx|odp)$/i;
+const isImageFile = f => (f.type || '').startsWith('image/') || IMG_EXT.test(f.name);
+const isPdfFile = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+const isDocumentFile = f => DOC_EXT.test(f.name);
+
+// Sniff the actual bytes, so a .png that is really a JPEG still works.
+const isJpegBytes = b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+const isPngBytes  = b => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+const looksSvg    = b => /<svg[\s>]/i.test(new TextDecoder().decode(b.subarray(0, 2048)));
+
+// Frame dimensions + EXIF orientation (1-8) read straight from a JPEG's bytes, so
+// page size never depends on how the browser happens to display the image.
+function jpegInfo(b) {
+  if (!isJpegBytes(b)) throw new Error('Not a JPEG file.');
+  let p = 2, orient = 1, w = 0, h = 0;
+  while (p + 4 <= b.length) {
+    if (b[p] !== 0xff) { p++; continue; }
+    const marker = b[p + 1];
+    if (marker === 0xff) { p++; continue; }
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { p += 2; continue; }
+    if (marker === 0xd9 || marker === 0xda) break;                       // EOI / start of scan
+    const len = (b[p + 2] << 8) | b[p + 3];
+    if (len < 2) break;
+    const seg = p + 4, end = p + 2 + len;
+    if (marker === 0xe1 && seg + 6 <= b.length && b[seg] === 0x45 && b[seg + 1] === 0x78 &&
+        b[seg + 2] === 0x69 && b[seg + 3] === 0x66 && b[seg + 4] === 0 && b[seg + 5] === 0) {
+      orient = exifOrient(b, seg + 6, end);                              // Exif\0\0 payload
+    } else if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      h = (b[seg + 1] << 8) | b[seg + 2];                                // SOF frame size
+      w = (b[seg + 3] << 8) | b[seg + 4];
+      if (w && h) break;                                                 // APP segments come first
+    }
+    p = end;
+  }
+  if (!w || !h) throw new Error('Could not read this JPEG.');
+  const swap = orient >= 5;                                              // orientations 5-8 are quarter turns
+  return { w: swap ? h : w, h: swap ? w : h, orient };
+}
+
+// Orientation tag out of the TIFF header inside an Exif APP1 payload (1 if absent/odd).
+function exifOrient(b, t, end) {
+  if (t + 8 > end) return 1;
+  const le = b[t] === 0x49;                                              // "II" little-endian, else "MM"
+  const u16 = o => le ? (b[o] | (b[o + 1] << 8)) : ((b[o] << 8) | b[o + 1]);
+  const u32 = o => le ? ((b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0)
+                      : (((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0);
+  if (u16(t + 2) !== 42) return 1;
+  const ifd = t + u32(t + 4);
+  if (ifd + 2 > end) return 1;
+  const n = u16(ifd);
+  for (let i = 0; i < n; i++) {
+    const e = ifd + 2 + i * 12;
+    if (e + 12 > end) break;
+    if (u16(e) === 0x0112) {                                             // tag 0x0112 = Orientation
+      const v = u16(e + 8);
+      return v >= 1 && v <= 8 ? v : 1;
+    }
+  }
+  return 1;
+}
+
+function pngSize(b) {
+  if (!isPngBytes(b) || b.length < 24) throw new Error('Not a readable PNG file.');
+  const w = ((b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19]) >>> 0;
+  const h = ((b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23]) >>> 0;
+  if (!w || !h) throw new Error('Could not read this PNG.');
+  return { w, h };
+}
+
+function svgAttrs(tag) {
+  const out = {};
+  for (const m of tag.matchAll(/\b([\w:-]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi))
+    out[m[1].toLowerCase()] = m[2].replace(/^["']|["']$/g, '');
+  return out;
+}
+
+// Intrinsic size of an SVG: numeric width/height, else the viewBox, else 800x600.
+function svgSize(text) {
+  const m = /<svg\b[^>]*>/i.exec(text);
+  if (!m) throw new Error('Not a valid SVG file.');
+  const a = svgAttrs(m[0]);
+  const num = v => { const x = /^([\d.]+)(px)?$/i.exec((v || '').trim()); return x ? parseFloat(x[1]) : 0; };
+  let w = num(a.width), h = num(a.height);
+  if (!(w > 0) || !(h > 0)) {
+    const p = (a.viewbox || '').trim().split(/[\s,]+/).map(Number);
+    if (p.length === 4 && p[2] > 0 && p[3] > 0) { if (!(w > 0)) w = p[2]; if (!(h > 0)) h = p[3]; }
+  }
+  return { w: w > 0 ? w : 800, h: h > 0 ? h : 600 };
+}
+
+// Give a size-less SVG an explicit size before decoding so it renders at the right scale.
+function withSvgSize(text) {
+  const m = /<svg\b[^>]*>/i.exec(text);
+  if (!m) return text;
+  const s = svgSize(text);
+  const tag = m[0]
+    .replace(/\bwidth\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '')
+    .replace(/\bheight\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '')
+    .replace(/\s*\/?>$/, ' width="' + s.w + '" height="' + s.h + '">');
+  return text.slice(0, m.index) + tag + text.slice(m.index + m[0].length);
+}
+
+function loadImage(src) {
+  return new Promise((ok, no) => {
+    const im = new Image();
+    im.onload = () => ok(im);
+    im.onerror = () => no(new Error('Could not decode this image in this browser.'));
+    im.src = src;
+  });
+}
+
+// Draw the image onto a canvas and hand back encoded bytes (PNG by default).
+async function rasterize(it, outType) {
+  const src = it.format === 'svg'
+    ? URL.createObjectURL(new Blob([withSvgSize(new TextDecoder().decode(it.bytes))],
+                                  { type: 'image/svg+xml' }))
+    : URL.createObjectURL(new Blob([it.bytes], { type: it.mime || '' }));
+  try {
+    const im = await loadImage(src);
+    const w = it.w || im.naturalWidth || im.width;
+    const h = it.h || im.naturalHeight || im.height;
+    if (!(w > 0 && h > 0)) throw new Error('Could not read this image.');
+    const MAX_PX = 12e6;                                  // keep canvas memory in check
+    let s = it.format === 'svg' ? 3 : 1;                  // vector art renders sharper at 3x
+    if (w * h * s * s > MAX_PX) s = Math.max(0.2, Math.sqrt(MAX_PX / (w * h)));
+    const cv = document.createElement('canvas');
+    cv.width  = Math.max(1, Math.round(w * s));
+    cv.height = Math.max(1, Math.round(h * s));
+    cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
+    const blob = await new Promise((res, rej) =>
+      cv.toBlob(b => b ? res(b) : rej(new Error('Could not convert this image.')),
+                outType || 'image/png', 0.95));
+    return { bytes: new Uint8Array(await blob.arrayBuffer()), jpeg: outType === 'image/jpeg' };
+  } finally {
+    URL.revokeObjectURL(src);
+  }
+}
+
+// Hand pdf-lib something it can embed for this image.
+async function embedImage(out, it) {
+  if (it.format === 'jpeg') {
+    if (it.orient === 1) return await out.embedJpg(it.bytes);      // untouched, lossless
+    const r = await rasterize(it, 'image/jpeg');                   // EXIF rotation baked in
+    return await out.embedJpg(r.bytes);
+  }
+  if (it.format === 'png') {
+    try { return await out.embedPng(it.bytes); } catch (e) { /* unusual flavour → rasterize below */ }
+  }
+  const r = await rasterize(it, 'image/png');
+  return await out.embedPng(r.bytes);
+}
+
+// Image pixels → page size in points: 96dpi pixels at 72dpi points, long edge capped
+// at an A4 side (1123pt), and small images are never upscaled.
+function pageBox(w, h) {
+  let pw = w * 0.75, ph = h * 0.75;
+  const longest = Math.max(pw, ph);
+  if (longest > 1123) { pw = pw * 1123 / longest; ph = ph * 1123 / longest; }
+  return [Math.max(1, pw), Math.max(1, ph)];
+}
+
+// Read a dropped image: bytes + intrinsic size (+ EXIF orientation for JPEGs).
+async function readImageMeta(item) {
+  const b = item.bytes;
+  if (isJpegBytes(b)) {
+    const i = jpegInfo(b);
+    item.format = 'jpeg'; item.w = i.w; item.h = i.h; item.orient = i.orient;
+  } else if (isPngBytes(b)) {
+    const s = pngSize(b);
+    item.format = 'png'; item.w = s.w; item.h = s.h;
+  } else if (looksSvg(b)) {
+    const s = svgSize(new TextDecoder().decode(b));
+    item.format = 'svg'; item.w = s.w; item.h = s.h;
+  } else {
+    const src = URL.createObjectURL(new Blob([b], { type: item.mime || '' }));
+    try {
+      const im = await loadImage(src);
+      item.w = im.naturalWidth || im.width;
+      item.h = im.naturalHeight || im.height;
+    } finally {
+      URL.revokeObjectURL(src);
+    }
+    if (!(item.w > 0 && item.h > 0)) throw new Error('Could not read this image in this browser.');
+    item.format = 'other';
+  }
+  item.pageCount = 1;
+}
+
+/* ---------- local office document text extraction ---------- */
+
+// Read ZIP entries used by DOCX/PPTX/ODP without sending files to a service.
+// ZIP64 and encrypted archives are intentionally rejected; decompression is bounded.
+async function unzipTextEntries(bytes, format) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sig = 0x06054b50;
+  let eocd = -1;
+  for (let p = Math.max(0, bytes.length - 65557); p <= bytes.length - 22; p++) {
+    if (view.getUint32(p, true) === sig) eocd = p;
+  }
+  if (eocd < 0) throw new Error('Not a supported Office document (ZIP directory missing).');
+  const count = view.getUint16(eocd + 10, true);
+  const directorySize = view.getUint32(eocd + 12, true);
+  let p = view.getUint32(eocd + 16, true);
+  if (count === 0xffff || directorySize === 0xffffffff || p === 0xffffffff)
+    throw new Error('ZIP64 Office files are not supported.');
+  const entries = new Map();
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    if (p + 46 > bytes.length || view.getUint32(p, true) !== 0x02014b50)
+      throw new Error('Invalid Office document archive.');
+    const flags = view.getUint16(p + 8, true), method = view.getUint16(p + 10, true);
+    const packed = view.getUint32(p + 20, true), size = view.getUint32(p + 24, true);
+    const nameLen = view.getUint16(p + 28, true), extraLen = view.getUint16(p + 30, true);
+    const commentLen = view.getUint16(p + 32, true), local = view.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith('/')) continue;
+    const wanted = format === 'docx' ? name === 'word/document.xml'
+      : format === 'pptx' ? /^ppt\/slides\/slide\d+\.xml$/i.test(name)
+      : name === 'content.xml';
+    if (!wanted) continue;
+    if (flags & 1) throw new Error('Encrypted Office documents are not supported.');
+    if (size > 80 * 1024 * 1024 || (total += size) > 200 * 1024 * 1024)
+      throw new Error('Office document is too large to safely process in this browser.');
+    if (local + 30 > bytes.length || view.getUint32(local, true) !== 0x04034b50)
+      throw new Error('Invalid Office document entry.');
+    const dataAt = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    if (dataAt + packed > bytes.length) throw new Error('Truncated Office document entry.');
+    const packedBytes = bytes.subarray(dataAt, dataAt + packed);
+    let data;
+    if (method === 0) data = packedBytes;
+    else if (method === 8 && typeof DecompressionStream !== 'undefined') {
+      try {
+        const stream = new Blob([packedBytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        const reader = stream.getReader(), chunks = [];
+        let actualSize = 0;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          actualSize += value.length;
+          if (actualSize > size || actualSize > 80 * 1024 * 1024) {
+            await reader.cancel();
+            throw new Error('Office document entry exceeded its declared size.');
+          }
+          chunks.push(value);
+        }
+        data = new Uint8Array(actualSize);
+        let at = 0;
+        for (const chunk of chunks) { data.set(chunk, at); at += chunk.length; }
+      } catch (e) {
+        if (e && e.message && e.message.includes('exceeded its declared size')) throw e;
+        throw new Error('This browser could not decompress the Office document.');
+      }
+    } else throw new Error('Unsupported Office archive compression.');
+    if (data.length !== size) throw new Error('Office document entry has an invalid size.');
+    entries.set(name, data);
+  }
+  return entries;
+}
+
+function xmlDocument(bytes, partName) {
+  if (!bytes) throw new Error('Missing ' + partName + ' in Office document.');
+  const xml = new DOMParser().parseFromString(new TextDecoder().decode(bytes), 'application/xml');
+  if (xml.querySelector('parsererror')) throw new Error('Could not parse ' + partName + '.');
+  return xml;
+}
+
+const descendants = (node, ns, local) => [...node.getElementsByTagNameNS(ns, local)];
+const DOCX_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const PPTX_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+const ODF_TEXT_NS = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0';
+const ODF_DRAW_NS = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0';
+const ODF_OFFICE_NS = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0';
+
+function xmlParagraphs(node, ns, paragraphNames) {
+  return descendants(node, ns, paragraphNames).map(p => p.textContent.replace(/\u00a0/g, ' ').trim()).filter(Boolean);
+}
+
+async function extractOfficeText(item) {
+  const zip = await unzipTextEntries(item.bytes, item.format);
+  let paras = [];
+  let slideMode = false;
+  if (item.format === 'docx') {
+    const doc = xmlDocument(zip.get('word/document.xml'), 'word/document.xml');
+    paras = xmlParagraphs(doc, DOCX_NS, 'p');
+  } else if (item.format === 'pptx') {
+    const names = [...zip.keys()].filter(n => /^ppt\/slides\/slide\d+\.xml$/i.test(n))
+      .sort((a, b) => +(a.match(/slide(\d+)/i)[1]) - +(b.match(/slide(\d+)/i)[1]));
+    if (!names.length) throw new Error('No slides found in this presentation.');
+    slideMode = true;
+    item.pageTexts = names.map(n => {
+      const slide = xmlDocument(zip.get(n), n);
+      return descendants(slide, PPTX_NS, 'p').map(p => descendants(p, PPTX_NS, 't').map(t => t.textContent).join('').trim()).filter(Boolean);
+    });
+  } else {
+    const doc = xmlDocument(zip.get('content.xml'), 'content.xml');
+    const body = descendants(doc, ODF_OFFICE_NS, 'body')[0];
+    const presentation = body && descendants(body, ODF_OFFICE_NS, 'presentation')[0];
+    if (presentation) {
+      const pages = descendants(presentation, ODF_DRAW_NS, 'page');
+      if (!pages.length) throw new Error('No slides found in this presentation.');
+      slideMode = true;
+      item.pageTexts = pages.map(page => descendants(page, ODF_TEXT_NS, '*')
+        .filter(n => n.localName === 'h' || n.localName === 'p')
+        .map(n => n.textContent.replace(/\u00a0/g, ' ').trim()).filter(Boolean));
+    } else throw new Error('ODP file does not contain a presentation.');
+  }
+  if (slideMode) return item.pageTexts.flatMap(lines => paginateSlideText(wrapOfficeText(lines, true)));
+  if (!paras.length) throw new Error('No readable text found in this document.');
+  return paginateOfficeText(paras);
+}
+
+function wrapOfficeText(paragraphs, slide) {
+  const cv = document.createElement('canvas'), ctx = cv.getContext('2d');
+  const fontSize = slide ? 26 : 18, maxWidth = slide ? 1130 : 672;
+  ctx.font = fontSize + 'px Arial, sans-serif';
+  const result = [];
+  for (const para of paragraphs) {
+    let line = '';
+    for (const word of para.split(/\s+/)) {
+      const next = line ? line + ' ' + word : word;
+      if (line && ctx.measureText(next).width > maxWidth) { result.push(line); line = word; }
+      else line = next;
+    }
+    if (line) result.push(line);
+    result.push('');
+  }
+  if (result[result.length - 1] === '') result.pop();
+  return result.length ? result : [''];
+}
+
+function paginateOfficeText(paragraphs) {
+  const lines = wrapOfficeText(paragraphs, false), perPage = 35, pages = [];
+  for (let i = 0; i < lines.length; i += perPage) pages.push(lines.slice(i, i + perPage));
+  return pages;
+}
+
+function paginateSlideText(lines) {
+  const perPage = 16, pages = [];
+  for (let i = 0; i < lines.length; i += perPage) pages.push(lines.slice(i, i + perPage));
+  return pages.length ? pages : [['']];
+}
+
+function renderOfficePage(item, lines, slide) {
+  const cv = document.createElement('canvas');
+  cv.width = slide ? 1280 : 816;
+  cv.height = slide ? 720 : 1056;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  const size = slide ? 26 : 18, lineHeight = slide ? 36 : 25;
+  ctx.fillStyle = '#171717'; ctx.font = size + 'px Arial, sans-serif'; ctx.textBaseline = 'top';
+  let y = slide ? 58 : 72;
+  for (const line of lines) {
+    ctx.fillText(line, slide ? 64 : 72, y, cv.width - (slide ? 128 : 144));
+    y += lineHeight;
+  }
+  const bytes = cv.toDataURL('image/png').split(',')[1];
+  return Uint8Array.from(atob(bytes), c => c.charCodeAt(0));
+}
+
 /* ---------- loading ---------- */
 
 async function addFiles(fileList) {
   const all = [...fileList];
-  const files = all.filter(f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+  const files = all.filter(f => isPdfFile(f) || isImageFile(f) || isDocumentFile(f));
   const skipped = all.length - files.length;
 
   if (!files.length) {
-    say(skipped ? 'Those files are not PDFs.' : '', skipped ? 'err' : '');
+    say(skipped ? 'Those files are not supported — use PDFs, images, DOCX, PPTX, or ODP.' : '', skipped ? 'err' : '');
     return;
   }
 
   say('Reading ' + files.length + ' file' + (files.length === 1 ? '' : 's') + '…');
 
   for (const file of files) {
+    const pdf = isPdfFile(file), image = isImageFile(file);
+    const docFormat = (file.name.match(/\.(docx|pptx|odp)$/i) || [])[1] || '';
     const item = {
-      id: nextId++, name: file.name, size: file.size,
-      bytes: null, pageCount: 0, error: null, range: ''
+      id: nextId++, kind: pdf ? 'pdf' : image ? 'image' : 'document', name: file.name, size: file.size,
+      mime: file.type || '', format: docFormat.toLowerCase(), w: 0, h: 0, orient: 1,
+      bytes: null, pageCount: 0, error: null, range: '', pageTexts: null, officePages: null
     };
     try {
       item.bytes = new Uint8Array(await file.arrayBuffer());
-      const doc = await PDFDocument.load(item.bytes, { ignoreEncryption: true });
-      item.pageCount = doc.getPageCount();
-      if (item.pageCount === 0) item.error = 'No pages found.';
+      if (pdf) {
+        const doc = await PDFDocument.load(item.bytes, { ignoreEncryption: true });
+        item.pageCount = doc.getPageCount();
+        if (item.pageCount === 0) item.error = 'No pages found.';
+      } else if (image) {
+        await readImageMeta(item);
+      } else {
+        item.officePages = await extractOfficeText(item);
+        item.pageCount = item.officePages.length;
+        if (item.pageCount === 0) item.error = 'No readable pages found.';
+      }
     } catch (e) {
-      item.error = 'Could not read this PDF (damaged or encrypted).';
+      item.error = pdf
+        ? 'Could not read this PDF (damaged or encrypted).'
+        : (e && e.message ? e.message : image ? 'Could not read this image.' : 'Could not read this office document.');
     }
     items.push(item);
     render();
   }
 
-  say(skipped ? skipped + ' non-PDF file' + (skipped === 1 ? '' : 's') + ' skipped.' : '',
+  say(skipped ? skipped + ' unsupported file' + (skipped === 1 ? '' : 's') + ' skipped.' : '',
       skipped ? 'err' : '');
 }
 
@@ -317,6 +706,24 @@ async function combine() {
     const out = await PDFDocument.create();
 
     for (const it of usable) {
+      if (it.kind === 'image') {
+        const img = await embedImage(out, it);
+        const [pw, ph] = pageBox(it.w, it.h);
+        const page = out.addPage([pw, ph]);
+        page.drawImage(img, { x: 0, y: 0, width: pw, height: ph });
+        continue;
+      }
+      if (it.kind === 'document') {
+        const slide = it.format === 'pptx' || (it.format === 'odp' && it.pageTexts);
+        for (const lines of it.officePages) {
+          const png = renderOfficePage(it, lines, slide);
+          const image = await out.embedPng(png);
+          const width = slide ? 960 : 612, height = slide ? 540 : 792;
+          const page = out.addPage([width, height]);
+          page.drawImage(image, { x: 0, y: 0, width, height });
+        }
+        continue;
+      }
       const indices = parseRange(it.range, it.pageCount);
       if (!indices) throw new Error('Invalid page range for "' + it.name + '".');
       const src = await PDFDocument.load(it.bytes, { ignoreEncryption: true });
@@ -325,7 +732,7 @@ async function combine() {
     }
 
     out.setTitle('Combined PDF');
-    out.setProducer('PDF Combiner');
+    out.setProducer('PDF, Image & Document Combiner');
     out.setCreationDate(new Date());
 
     const blob = new Blob([await out.save()], { type: 'application/pdf' });
@@ -367,7 +774,7 @@ dropEl.addEventListener('drop', e => {
   if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
 });
 
-// keep the browser from navigating away when a PDF lands outside the drop zone
+// keep the browser from navigating away when a file lands outside the drop zone
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => e.preventDefault());
 
