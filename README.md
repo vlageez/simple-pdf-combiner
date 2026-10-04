@@ -1,62 +1,69 @@
-# PDF, Image & Document Combiner
+# PDF Combiner
 
-A small browser app that combines PDFs, images, and text extracted from DOCX, PPTX, and ODP files into one PDF. Files are processed locally in your browser; the app does not upload them or use a conversion server.
+A single-file web app that merges PDFs entirely in your browser. No server, no upload, no build step — your files never leave your device.
 
 ## Use it
 
-Open the app at https://vlageez.github.io/simple-pdf-combiner/, or open `index.html` in a modern browser. The app uses pdf-lib (`pdf-lib.min.js`) to read and assemble PDF pages. Keep `index.html` beside that library when using the repository files, or use **Download standalone HTML** in the app to create one self-contained file. The standalone file includes the library and works offline; it is larger because the PDF library is embedded.
+Double-click `index.html`, or open it in any modern browser. It runs fine from `file://`.
 
-1. Drop files onto the box (or click to choose them): PDF, supported images, DOCX, PPTX, or ODP.
-2. Drag rows — or use the ↑ / ↓ buttons — to set the output order.
-3. Optionally narrow a PDF to selected pages. Office files are converted automatically.
-4. Click **Combine & download** to save `combined.pdf`, or **Download standalone HTML** to save a single-file copy of the app.
-
-### Office document conversion
-
-Office files are parsed in your browser. PPTX and ODP presentations produce pages containing each slide's readable text (very text-heavy slides may continue across multiple pages). DOCX text is laid out into plain pages. ODT word-processing documents are not supported; ODP here refers to presentations. The conversion is deliberately text-only: original fonts, styling, page layout, images, charts, tables' visual formatting, animations, speaker notes, and other embedded objects are not preserved. DOCX page breaks and original pagination are not retained; its output pagination is generated from the extracted text. Office-generated PDF pages are raster images, so their text is not selectable or searchable. Documents with no readable text may be rejected or produce blank presentation slides.
-
-This is intended as a convenient way to collect document text alongside PDFs and images, not as a faithful Office renderer. For a visually accurate copy, export the document to PDF in an office suite first and add that PDF.
+1. Drop PDFs onto the box (or click to pick them)
+2. Drag rows — or use the ↑ / ↓ buttons — to set the order
+3. Optionally narrow each file to a page range
+4. **Combine & download** → saves `combined.pdf`
 
 ## Page ranges
 
-Leave the page box blank to include every PDF page. Otherwise enter a comma-separated list:
+Leave the page box blank to include every page. Otherwise enter a comma-separated list:
 
-| Input | Pages taken |
-|---|---|
-| *(blank)* | all |
-| `3` | page 3 only |
-| `1-4` | pages 1 through 4 |
-| `5-` | page 5 to the end |
-| `-3` | start through page 3 |
+| Input      | Pages taken                |
+|------------|----------------------------|
+| *(blank)*  | all                        |
+| `3`        | page 3 only                |
+| `1-4`      | pages 1 through 4          |
+| `5-`       | page 5 to the end          |
+| `-3`       | start through page 3       |
 | `1-2, 7, 9-` | combinations of the above |
 
-Out-of-range or malformed input turns the field red and disables the Combine button until it is fixed. Page ranges apply to PDFs only.
-
-Each image becomes one page, sized to the image and scaled so its long edge fits an A4 side without upscaling.
+Out-of-range or malformed input turns the field red and disables the Combine button until it's fixed.
 
 ## Features
 
-- Drag-and-drop or file picker for PDFs, images (JPEG, PNG, SVG, GIF, WebP, BMP, AVIF, and other browser-decodable image formats), DOCX, PPTX, and ODP
-- Image pages retain EXIF photo orientation; SVGs are rasterized at higher resolution
-- Local text extraction from DOCX, PPTX, and ODP, with output page count shown in the file list
-- Reorder by dragging, sort alphabetically, remove individual files, or clear all
-- Live count of output pages and per-file error reporting
+- Drag-and-drop or file picker; non-PDF files are ignored
+- Reorder by dragging, sort alphabetically, remove individual files, clear all
+- Live count of the pages that will end up in the output
+- Per-file error reporting — a damaged or locked PDF is flagged on its own row instead of failing the whole batch
+- Encrypted PDFs are read when possible; if one can't be opened, remove its password first
 - Light and dark themes follow your system setting; works on mobile widths
 
 ## Privacy
 
-Input files are read and processed in the browser. Office documents are not sent to a third-party conversion service. The app has no backend and does not transmit your files. The standalone HTML embeds pdf-lib and needs no external library request. When using the repository's separate files, `pdf-lib.min.js` must be beside `index.html` (or the CDN fallback needs internet access).
+Everything happens in the page: files are read with the File API, merged in memory, and handed back as a blob download. There is no backend and nothing is transmitted. To verify, open DevTools → Network and merge a file — you'll see no requests.
+
+## Offline use
+
+The page loads [pdf-lib](https://pdf-lib.js.org/) 1.17.1 from a CDN, so the *first* load needs internet. To make it work fully offline, download the library next to `index.html`:
+
+```bash
+curl -O https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js
+```
+
+Then change the script tag in `index.html` to:
+
+```html
+<script src="pdf-lib.min.js"></script>
+```
+
+## Hosting
+
+It's one static HTML file, so any static host works — GitHub Pages, Netlify, S3, or a folder on a shared drive. Nothing to configure.
 
 ## Limitations
 
-- Office conversion keeps readable text, not the original document appearance. Use PDF input when visual fidelity matters.
-- Office formats must be ZIP-based DOCX, PPTX, or ODP files. Encrypted documents, ZIP64 archives, unsupported compression, and archives beyond the parser's safety limits are not supported.
-- Browser support for `DecompressionStream` is needed for compressed Office files; use a current browser.
-- Large files are held in memory; processing may be slow or hit browser memory limits.
-- Image formats are limited to what your browser can decode; unsupported files are flagged on their own row.
-- Output PDFs are unencrypted, even if an input PDF was protected.
-- PDF form fields, annotations, and bookmarks are not guaranteed to survive merging.
+- Large PDFs are held in memory; merging several hundred-megabyte files may be slow or hit browser memory limits
+- Output PDFs are unencrypted, even if an input was protected
+- Form fields, annotations, and bookmarks are not guaranteed to survive the merge
+- Requires a browser with the File API and `async`/`await` (any release from the last several years)
 
 ## License
 
-Public domain. Open-source.
+Public domain — do whatever you like with it.
